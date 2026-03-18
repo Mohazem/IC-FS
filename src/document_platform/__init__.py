@@ -1,0 +1,1 @@
+"""Document processing platform package."""

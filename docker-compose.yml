@@ -1,0 +1,38 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: doc-platform-app
+    env_file:
+      - .env
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+      HF_BASE_URL: ${HF_BASE_URL:-https://router.huggingface.co}
+      HF_MODEL: ${HF_MODEL:-katanemo/Arch-Router-1.5B:hf-inference}
+      HF_EMBED_MODEL: ${HF_EMBED_MODEL:-intfloat/multilingual-e5-large}
+      QDRANT_URL: ${QDRANT_URL:-http://qdrant:6333}
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-documents}
+      APP_DATA_DIR: ${APP_DATA_DIR:-/app/data}
+    ports:
+      - "8501:8501"
+    volumes:
+      - app_data:/app/data
+    depends_on:
+      qdrant:
+        condition: service_started
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: doc-platform-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+
+volumes:
+  app_data:
+  qdrant_data:
