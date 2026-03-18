@@ -10,6 +10,59 @@ Elle permet de charger des documents `PDF`, `images`, `Excel`, `CSV` ou du `text
 - stocker les resultats en `JSON` et `SQLite`
 - indexer le contenu dans `Qdrant` si active
 
+## Diagramme d'architecture
+
+```mermaid
+flowchart LR
+    U["🖥️ Utilisateur<br/>Streamlit UI"] --> I["📄 Entrees<br/>PDF / Image / Excel / CSV / Texte"]
+
+    I --> P["⚙️ Orchestrateur<br/>DocumentPipeline"]
+
+    subgraph E["Extraction documentaire"]
+        P --> E1["📘 PyMuPDF<br/>lecture PDF / rendu pages"]
+        P --> E2["📑 pdfplumber<br/>extraction texte PDF"]
+        P --> E3["📊 Camelot<br/>extraction de tableaux PDF natifs"]
+        P --> E4["🔎 Tesseract<br/>OCR scans et images"]
+    end
+
+    E1 --> T["🧾 Texte consolide"]
+    E2 --> T
+    E3 --> T
+    E4 --> T
+
+    subgraph A["Analyse et structuration"]
+        T --> A1["🐍 Mode Local<br/>regles Python + heuristiques"]
+        T --> A2["🤗 Hugging Face<br/>enrichissement semantique optionnel"]
+        T --> A3["📈 Financial Parser<br/>etats financiers / colonnes / metriques"]
+    end
+
+    A1 --> R["📦 Resultat structure"]
+    A2 --> R
+    A3 --> R
+
+    subgraph B["Controle metier"]
+        R --> B1["✅ Regles metier"]
+        B1 --> B2["📉 Ratios / coherence"]
+    end
+
+    subgraph S["Stockage et recherche"]
+        R --> S1["🗄️ SQLite"]
+        R --> S2["📁 JSON"]
+        T --> S3["🧠 Embeddings"]
+        S3 --> S4["🔍 Qdrant"]
+    end
+
+    B2 --> O["📊 Restitution UI"]
+    S1 --> O
+    S2 --> O
+    S4 --> O
+
+    O --> O1["📋 Tableau des metriques"]
+    O --> O2["📚 Etats financiers detailles"]
+    O --> O3["🧩 JSON structure"]
+    O --> O4["⬇️ Export"]
+```
+
 ## Vue d'ensemble
 
 Pipeline reel de l'application:
