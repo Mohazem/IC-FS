@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import re
+import tempfile
 from collections import defaultdict
 from difflib import SequenceMatcher
 from statistics import median
@@ -120,10 +121,11 @@ class FinancialStatementParser:
 
         statements: dict[str, Any] = {}
         detected_years: list[str] = []
+        camelot_tables = self._extract_camelot_statement_tables(file_bytes, pages)
 
         for page in pages:
             for statement_key, segment_text in self._extract_statement_segments(page["text"]):
-                parsed = self._parse_native_statement_page(segment_text, statement_key, page["page"])
+                parsed = camelot_tables.get((statement_key, page["page"])) or self._parse_native_statement_page(segment_text, statement_key, page["page"])
                 if not parsed["line_items"]:
                     continue
 
@@ -139,6 +141,139 @@ class FinancialStatementParser:
             "years": detected_years,
             "statements": statements,
         }
+
+    def _extract_camelot_statement_tables(
+        self,
+        file_bytes: bytes,
+        pages: list[dict[str, Any]],
+    ) -> dict[tuple[str, int], dict[str, Any]]:
+        try:
+            import camelot  # type: ignore
+        except Exception:
+            return {}
+
+        page_statements: list[tuple[int, str]] = []
+        for page in pages:
+            for statement_key, _segment_text in self._extract_statement_segments(page["text"]):
+                page_statements.append((page["page"], statement_key))
+
+        if not page_statements:
+            return {}
+
+        results: dict[tuple[str, int], dict[str, Any]] = {}
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as handle:
+            handle.write(file_bytes)
+            temp_path = handle.name
+
+        try:
+            for page_number, statement_key in page_statements:
+                try:
+                    tables = camelot.read_pdf(temp_path, pages=str(page_number), flavor="stream")
+                except Exception:
+                    continue
+
+                parsed = self._parse_camelot_tables(tables, statement_key, page_number)
+                if parsed["line_items"]:
+                    results[(statement_key, page_number)] = parsed
+        finally:
+            try:
+                import os
+
+                os.unlink(temp_path)
+            except Exception:
+                pass
+
+        return results
+
+    def _parse_camelot_tables(self, tables: Any, statement_key: str, page_number: int) -> dict[str, Any]:
+        columns: list[str] = []
+        line_items: list[dict[str, Any]] = []
+
+        for table in tables:
+            try:
+                records = table.df.fillna("").values.tolist()
+            except Exception:
+                continue
+
+            table_columns, table_items = self._camelot_table_to_line_items(records)
+            if len(table_columns) > len(columns):
+                columns = table_columns
+            line_items.extend(table_items)
+
+        line_items = self._consolidate_statement_line_items(line_items, columns)
+        return {
+            "title": self.statement_schema[statement_key]["title"],
+            "page": page_number,
+            "columns": columns,
+            "line_items": line_items,
+        }
+
+    def _camelot_table_to_line_items(self, rows: list[list[Any]]) -> tuple[list[str], list[dict[str, Any]]]:
+        cleaned_rows = []
+        for row in rows:
+            values = [re.sub(r"\s+", " ", str(cell or "").replace("\n", " ")).strip() for cell in row]
+            if any(values):
+                cleaned_rows.append(values)
+
+        if not cleaned_rows:
+            return [], []
+
+        data_start = None
+        for index, row in enumerate(cleaned_rows):
+            amount_cells = sum(1 for cell in row[1:] if self._extract_inline_amounts(cell))
+            if row and row[0] and amount_cells >= 2:
+                data_start = index
+                break
+
+        if data_start is None:
+            return [], []
+
+        header_rows = cleaned_rows[:data_start]
+        total_columns = max(len(row) for row in cleaned_rows)
+        columns: list[str] = []
+        for column_index in range(1, total_columns):
+            header_text = " ".join(row[column_index] for row in header_rows if column_index < len(row) and row[column_index]).strip()
+            normalized_header = self._normalize_camelot_header(header_text)
+            if normalized_header:
+                columns.append(normalized_header)
+
+        if len(columns) < 2:
+            return [], []
+
+        line_items: list[dict[str, Any]] = []
+        for row in cleaned_rows[data_start:]:
+            label = row[0].strip() if row else ""
+            amounts: list[str] = []
+            for cell in row[1:]:
+                amounts.extend(self._extract_inline_amounts(cell))
+
+            if not label and not amounts:
+                continue
+            if not label:
+                label = "Valeur"
+
+            values: dict[str, str] = {}
+            for index, amount in enumerate(amounts[: len(columns)]):
+                values[columns[index]] = amount
+
+            if values:
+                line_items.append({"label": label, "values": values})
+
+        return columns, line_items
+
+    def _normalize_camelot_header(self, header_text: str) -> str | None:
+        if not header_text:
+            return None
+
+        lowered = self._normalize(header_text)
+        year_match = re.search(r"(19|20)\d{2}", header_text)
+        if not year_match:
+            return None
+
+        year = year_match.group(0)
+        if "prevu" in lowered or "prévu" in lowered or "resultats prevus" in lowered:
+            return f"Prévu {year}"
+        return year
 
     def extract_period_metrics(
         self,

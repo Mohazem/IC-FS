@@ -22,7 +22,7 @@ class StructuredExtractionService:
 
         prompt = (
             "Extract a JSON object with keys: title, document_type, summary, entities, dates, amounts, "
-            "language, confidence, financial_data, iq_solution_fit. Keep entities, dates, and amounts short. "
+            "language, confidence, financial_data. Keep entities, dates, and amounts short. "
             "Return JSON only.\n\n"
             f"Document:\n{snippet}"
         )
@@ -78,7 +78,6 @@ class StructuredExtractionService:
         document_type = self._detect_document_type(cleaned_text, title)
         confidence = self._estimate_confidence(title, summary, document_type, dates, amounts, entities)
         financial_data = self._extract_financial_data(cleaned_text, title, dates, amounts)
-        iq_solution_fit = self._build_iq_solution_fit(cleaned_text, document_type, financial_data)
 
         return {
             "title": title,
@@ -90,7 +89,6 @@ class StructuredExtractionService:
             "language": language,
             "confidence": confidence,
             "financial_data": financial_data,
-            "iq_solution_fit": iq_solution_fit,
             "_provider": "fallback",
             "_reason": reason,
         }
@@ -412,62 +410,6 @@ class StructuredExtractionService:
         normalized = sorted(set(plausible), reverse=True)
         return normalized[:2]
 
-    def _build_iq_solution_fit(self, text: str, document_type: str, financial_data: dict) -> dict:
-        lower = text.lower()
-        capabilities = {
-            "multi_format_ingestion": {
-                "status": "covered",
-                "evidence": "PDF, image, Excel, CSV, and text inputs are supported by the application.",
-            },
-            "ocr_for_scanned_documents": {
-                "status": "covered",
-                "evidence": "Tesseract OCR is used for scanned PDFs and images.",
-            },
-            "financial_data_structuring": {
-                "status": "covered" if document_type == "financial_statement" else "partial",
-                "evidence": "The app extracts statement sections, key metrics, dates, entities, and normalized financial metadata.",
-            },
-            "automation_of_manual_entry": {
-                "status": "covered",
-                "evidence": "Pipeline automates extraction, structuring, validation, indexing, and persistence.",
-            },
-            "risk_analysis_support": {
-                "status": "covered" if financial_data.get("risk_indicators", {}).get("coverage_ready") else "partial",
-                "evidence": "Risk indicators such as debt ratio and operating margin are derived when amounts are available.",
-            },
-            "traceability_and_storage": {
-                "status": "covered",
-                "evidence": "Results are stored in JSON and SQLite and can be indexed in Qdrant.",
-            },
-        }
-
-        constraints: list[str] = []
-        if "excel" not in lower and "csv" not in lower:
-            constraints.append("Spreadsheet-specific mapping depends on the uploaded source file, not only on OCR text.")
-        if document_type != "financial_statement":
-            constraints.append("Document classification should be strengthened for low-quality scans.")
-        if not financial_data.get("key_metrics", {}).get("assets"):
-            constraints.append("Financial ratios improve when statement line items are clearly detected.")
-
-        return {
-            "target_client": "Investissement Quebec",
-            "solution_name": "Solution FS",
-            "fit_score": self._compute_fit_score(capabilities),
-            "capabilities": capabilities,
-            "recommended_mode": "Local/Python",
-            "recommended_deployment": "Streamlit + Python services + OCR + SQLite/JSON + optional Qdrant + optional Hugging Face",
-            "constraints": constraints,
-        }
-
-    def _compute_fit_score(self, capabilities: dict) -> int:
-        score = 0
-        for capability in capabilities.values():
-            if capability["status"] == "covered":
-                score += 16
-            elif capability["status"] == "partial":
-                score += 8
-        return min(score, 100)
-
     def _parse_amount(self, raw_value: str | None) -> float | None:
         if not raw_value:
             return None
@@ -592,10 +534,6 @@ class StructuredExtractionService:
         financial_data = normalized.get("financial_data")
         if not isinstance(financial_data, dict):
             normalized["financial_data"] = {}
-
-        iq_solution_fit = normalized.get("iq_solution_fit")
-        if not isinstance(iq_solution_fit, dict):
-            normalized["iq_solution_fit"] = {"llm_assessment": iq_solution_fit}
 
         return normalized
 

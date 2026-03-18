@@ -28,12 +28,6 @@ class BusinessRulesService:
             if not financial_data.get("risk_indicators", {}).get("coverage_ready"):
                 recommendations.append("Completer les montants d'actif, passif, revenus et charges pour calculer les ratios de risque.")
 
-        iq_solution_fit = structured_data.get("iq_solution_fit", {})
-        if iq_solution_fit:
-            fit_score = iq_solution_fit.get("fit_score", 0)
-            if fit_score < 70:
-                recommendations.append("Renforcer le mapping des postes financiers et la classification documentaire pour mieux repondre au besoin IQ.")
-
         return {
             "valid": len(issues) == 0,
             "issues": issues,

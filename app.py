@@ -18,9 +18,6 @@ def render_summary(result: dict) -> None:
     with right:
         st.metric("OCR utilise", "Oui" if result["ocr"]["used"] else "Non")
         st.metric("Pages", result["extraction"]["page_count"])
-    fit = result["structured_extraction"].get("iq_solution_fit", {})
-    if fit:
-        st.metric("Fit IQ", f'{fit.get("fit_score", 0)} / 100')
 
 
 def render_financial_table(financial_data: dict) -> None:
@@ -139,7 +136,7 @@ def main() -> None:
 
         render_summary(result)
 
-        tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["Texte", "Structure", "Finance", "Fit IQ", "Regles", "Indexation", "Stockage"])
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["Texte", "Structure", "Finance", "Regles", "Indexation", "Stockage"])
 
         with tab1:
             st.text_area("Texte extrait", value=result["text"], height=320)
@@ -154,15 +151,12 @@ def main() -> None:
             st.json(financial_data)
 
         with tab4:
-            st.json(result["structured_extraction"].get("iq_solution_fit", {}))
-
-        with tab5:
             st.json(result["business_rules"])
 
-        with tab6:
+        with tab5:
             st.json(result["indexing"])
 
-        with tab7:
+        with tab6:
             st.json(result["storage"])
             json_path = Path(result["storage"]["json_path"])
             if json_path.exists():
