@@ -1,10 +1,11 @@
 streamlit>=1.44
+pandas==1.5.3
 pdfplumber>=0.11
 pymupdf>=1.25
-camelot-py>=1.0
+camelot-py==0.11.0
 pillow>=11.0
-paddleocr>=2.8
-paddlepaddle>=3.0.0
+paddleocr==3.0.1
+paddlepaddle==3.1.1
 pytesseract>=0.3.13
 qdrant-client>=1.12
 requests>=2.32

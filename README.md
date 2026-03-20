@@ -1,531 +1,396 @@
 # Solution FS
 
-Application Streamlit de traitement documentaire et d'extraction financiere.
-
-Elle permet de charger des documents `PDF`, `images`, `Excel`, `CSV` ou du `texte`, puis de:
-- extraire le texte
-- reconstruire les tableaux financiers
-- detecter les periodes et les colonnes comparatives
-- produire un JSON structure
-- interroger l'etat financier via un chat RAG
-- stocker les resultats en `JSON` et `SQLite`
-- indexer le contenu dans `Qdrant` si active
-
-## Diagramme d'architecture
-
-```mermaid
-flowchart LR
-    U["🖥️ Utilisateur<br/>Streamlit UI"] --> I["📄 Entrees<br/>PDF / Image / Excel / CSV / Texte"]
-
-    I --> P["⚙️ Orchestrateur<br/>DocumentPipeline"]
-
-    subgraph E["Extraction documentaire"]
-        P --> E1["📘 PyMuPDF<br/>lecture PDF / rendu pages"]
-        P --> E2["📑 pdfplumber<br/>extraction texte PDF"]
-        P --> E3["📊 Camelot<br/>extraction de tableaux PDF natifs"]
-        P --> E4["🔎 Tesseract<br/>OCR scans et images"]
-    end
-
-    E1 --> T["🧾 Texte consolide"]
-    E2 --> T
-    E3 --> T
-    E4 --> T
-
-    subgraph A["Analyse et structuration"]
-        T --> A1["🐍 Mode Local<br/>regles Python + heuristiques"]
-        T --> A2["🤗 Hugging Face<br/>enrichissement semantique optionnel"]
-        T --> A3["📈 Financial Parser<br/>etats financiers / colonnes / metriques"]
-    end
-
-    A1 --> R["📦 Resultat structure"]
-    A2 --> R
-    A3 --> R
-
-    subgraph B["Controle metier"]
-        R --> B1["✅ Regles metier"]
-        B1 --> B2["📉 Ratios / coherence"]
-    end
-
-    subgraph S["Stockage et recherche"]
-        R --> S1["🗄️ SQLite"]
-        R --> S2["📁 JSON"]
-        T --> S3["🧠 Embeddings"]
-        S3 --> S4["🔍 Qdrant"]
-    end
-
-    B2 --> O["📊 Restitution UI"]
-    S1 --> O
-    S2 --> O
-    S4 --> O
-
-    O --> O1["📋 Tableau des metriques"]
-    O --> O2["📚 Etats financiers detailles"]
-    O --> O3["🧩 JSON structure"]
-    O --> O4["⬇️ Export"]
-```
+Application Streamlit pour extraire, structurer, indexer et interroger des etats financiers a partir de PDF, images, Excel, CSV ou texte brut.
 
 ## Vue d'ensemble
 
-Pipeline reel de l'application:
+Fonctions principales :
+- extraction de texte native pour les PDF accessibles
+- OCR avec decision automatique ou moteur force
+- extraction tabulaire avec Camelot pour les PDF natifs
+- structuration locale ou enrichie via Hugging Face
+- extraction financiere specialisee par etat et par periode
+- stockage JSON et SQLite
+- indexation Qdrant
+- chat RAG sur le document traite
 
-1. `Streamlit UI` recoit un fichier ou du texte
-2. `DocumentPipeline` orchestre le traitement
-3. extraction native du contenu
-4. OCR `PaddleOCR` ou `Tesseract` si necessaire
-5. extraction structuree:
-   - mode `Rapide (Local)`
-   - ou mode `Enrichi (Hugging Face)`
-6. extraction financiere specialisee:
-   - etats financiers
-   - periodes
-   - line items
-   - key metrics
-7. regles metier
-8. stockage `JSON` / `SQLite`
-9. indexation `Qdrant` optionnelle
-10. chat RAG sur l'etat financier traite
+## Architecture
 
-## Outils utilises
+```mermaid
+flowchart LR
+    U["Utilisateur<br/>Streamlit UI"] --> IN["Entrees<br/>PDF / Image / Excel / CSV / Texte"]
+    IN --> P["DocumentPipeline"]
+
+    subgraph EX["Extraction documentaire"]
+        P --> E1["PyMuPDF<br/>lecture PDF / rendu pages"]
+        P --> E2["pdfplumber<br/>texte PDF complementaire"]
+        P --> E3["Camelot<br/>tableaux PDF natifs"]
+        P --> E4["OCRService<br/>Auto / PaddleOCR / Tesseract"]
+        E4 --> E41["Decision OCR<br/>native / scanned / mixed / forced"]
+    end
+
+    E1 --> TXT["Texte consolide"]
+    E2 --> TXT
+    E3 --> TXT
+    E4 --> TXT
+
+    subgraph AN["Analyse"]
+        TXT --> S1["StructuredExtractionService<br/>Local Python"]
+        TXT --> S2["StructuredExtractionService<br/>Hugging Face"]
+        TXT --> FP["FinancialStatementParser<br/>etats / colonnes / line items / key metrics"]
+        FP --> FR["financial_statements"]
+        FP --> KM["key_metrics"]
+    end
+
+    S1 --> OUT["Resultat structure"]
+    S2 --> OUT
+    FR --> OUT
+    KM --> OUT
+
+    subgraph DATA["Donnees"]
+        OUT --> ST1["JSON"]
+        OUT --> ST2["SQLite"]
+        TXT --> EMB["Embeddings"]
+        EMB --> Q["Qdrant"]
+    end
+
+    subgraph CHAT["Question / Reponse"]
+        OUT --> RAG["FinancialRAGService"]
+        Q --> RAG
+        RAG --> UIR["Reponse dans l'UI"]
+    end
+```
+
+## Flux du chat
+
+```mermaid
+flowchart TD
+    Q["Question utilisateur"] --> C["FinancialRAGService"]
+    C --> C1["Recherche locale<br/>key_metrics / line_items / texte"]
+    C --> C2["Recherche Qdrant<br/>si indexation active"]
+    C --> C3["Regles metier locales<br/>rentabilite / solvabilite / postes"]
+    C1 --> M["Fusion du contexte"]
+    C2 --> M
+    C3 --> M
+    M --> A["Reponse locale ou Hugging Face"]
+```
+
+## Composants et utilite exacte
 
 ### Streamlit
 
-Role:
+Role :
 - interface utilisateur
-- upload des fichiers
+- upload de fichiers
 - choix des options de traitement
-- affichage du texte extrait
-- affichage du JSON structure
-- affichage des tableaux financiers
-
-Quand il intervient:
-- au debut pour l'entree utilisateur
-- a la fin pour la restitution
-
-Configuration visible dans l'UI:
-- `Forcer OCR`
-- `Moteur OCR`
-- `Mode d'analyse`
-- `Indexer dans Qdrant`
+- affichage du texte, du JSON, des tableaux financiers et du chat
 
 ### PyMuPDF
 
-Role:
-- lecture native des PDFs
+Role :
+- lecture native des PDF
 - extraction du texte page par page
-- rendu image des pages pour OCR si besoin
+- rendu d'images de pages pour l'OCR
 
-Quand il intervient:
-- pour les PDFs texte
-- pour les PDFs scannes avant OCR
-
-Cas d'usage:
-- recuperer rapidement le texte d'un PDF accessible
-- servir de base au parseur financier
+Usage :
+- PDF natifs
+- preparation des pages PDF pour PaddleOCR ou Tesseract
 
 ### pdfplumber
 
-Role:
-- extraction texte complementaire depuis PDF
-- utile pour certains PDFs ou la mise en page est moins bien lue par d'autres outils
+Role :
+- extraction texte complementaire pour certains PDF
 
-Quand il intervient:
-- dans la couche d'extraction documentaire PDF
-
-Cas d'usage:
-- PDF texte classique
-- fallback si la lecture native est imparfaite
+Usage :
+- secours si la lecture native seule est inegale
 
 ### Camelot
 
-Role:
-- extraction de tableaux dans les PDFs natifs
-- reconstruction des colonnes et des cellules
+Role :
+- extraction de tableaux dans les PDF natifs
 
-Quand il intervient:
-- avant les heuristiques locales sur les PDFs accessibles
-- surtout pour les etats financiers avec colonnes comparatives
+Usage :
+- bilans
+- etats des resultats
+- colonnes comparatives du type `2025 / 2024` ou `Prevu 2025 / 2025 / 2024`
 
-Cas d'usage:
-- tableaux `2025 / 2024`
-- tableaux `Prevu 2025 / 2025 / 2024`
-- bilans, etats des resultats, flux de tresorerie
-
-Important:
-- `Camelot` ne fait pas d'OCR
-- il fonctionne mieux sur les PDFs qui contiennent deja du vrai texte et de vraies lignes de tableau
+Important :
+- Camelot ne fait pas d'OCR
+- il est utile seulement si le PDF contient deja du vrai texte
 
 ### Tesseract
 
-Role:
-- OCR
-- lecture du texte a partir d'une image ou d'un PDF scanne
+Role :
+- OCR classique
 
-Quand il intervient:
-- si `Forcer OCR` est active
-- ou si l'extraction native retourne peu ou pas de texte
-
-Cas d'usage:
-- PDF scanne
-- image `png/jpg/jpeg`
-- document photo
-
-Important:
-- `Tesseract` lit le texte, mais ne reconstruit pas aussi bien les tableaux que `Camelot`
-- il est utile quand le document n'est pas nativement exploitable
+Usage :
+- scans
+- images
+- fallback si PaddleOCR echoue
 
 ### PaddleOCR
 
-Role:
-- OCR deep learning plus robuste sur les scans difficiles
-- meilleure lecture des documents bruites ou multilingues
+Role :
+- OCR deep learning plus robuste
 
-Quand il intervient:
-- si `Moteur OCR = PaddleOCR`
-- ou si `Moteur OCR = Auto`
-
-Cas d'usage:
-- PDF scanne difficile
+Usage :
+- documents scannes difficiles
+- PDF image
 - image de document
-- OCR plus robuste que Tesseract sur certaines mises en page
 
-Important:
-- `PaddleOCR` est plus lourd que `Tesseract`
-- il est utile quand la qualite OCR est prioritaire
+Etat actuel :
+- stabilise dans Docker
+- utilise des modeles `mobile` plus legers
+- bascule automatiquement sur Tesseract si PaddleOCR renvoie un resultat vide ou echoue
 
 ### Hugging Face
 
-Role:
+Role :
 - enrichissement semantique optionnel
-- aide a produire une structure plus interpretee
+- reformulation de reponses dans le chat
 
-Quand il intervient:
-- seulement en mode `Enrichi (Hugging Face)`
+Usage :
+- mode `Enrichi (Hugging Face)`
+- generation de reponses RAG quand un token est disponible
 
-Cas d'usage:
-- documents heterogenes
-- libelles tres variables
-- besoin d'un resume ou d'une structure plus souple
+### FinancialStatementParser
 
-Important:
-- ce mode depend d'un token `HF_TOKEN`
-- sans token, l'application repasse en fallback local
+Role :
+- detection des etats financiers
+- detection dynamique des colonnes d'annees
+- extraction des line items
+- derivation des `key_metrics`
+
+Sorties principales :
+- `financial_statements`
+- `key_metrics`
 
 ### Qdrant
 
-Role:
+Role :
 - indexation vectorielle
-- recherche semantique future
+- recherche semantique pour le chat
 
-Quand il intervient:
-- seulement si `Indexer dans Qdrant` est active
+Usage :
+- optionnel
+- utile surtout pour le chat et la recherche documentaire
 
-Cas d'usage:
-- retrouver des documents similaires
-- preparer une recherche sémantique
-- alimenter un futur moteur de question/reponse
+### SQLite et JSON
 
-### Chat RAG
+Role :
+- persistance locale des resultats
 
-Role:
-- permettre de poser des questions sur tout l'etat financier traite
+Usage :
+- historique
+- debug
+- export
 
-Quand il intervient:
-- apres le traitement du document
-- dans l'onglet `Chat`
+## Choix automatique de l'OCR
 
-Types de questions supportees:
-- `Quels sont les passifs en 2025 et 2024 ?`
-- `Quel est le total des charges ?`
-- `Quelle ligne parle des avantages sociaux futurs ?`
-- `Resume les principales variations entre 2025 et 2024`
+Le pipeline commence toujours par l'extraction native.
 
-Sources utilisees:
-- `key_metrics`
-- `financial_statements`
-- texte extrait
-- Qdrant si l'indexation est active
+Ensuite, `DocumentPipeline._should_run_ocr()` decide si l'OCR est necessaire.
 
-### SQLite
+Signaux utilises :
+- texte natif vide
+- texte trop court par page
+- texte trop bruite
+- structure de lignes trop fragmentees
+- image en entree
+- OCR force par l'utilisateur
 
-Role:
-- stockage local structure des resultats
+Sortie de la decision :
+- `should_run`
+- `pdf_type`
+- `reason`
+- `details`
 
-Quand il intervient:
-- a chaque execution du pipeline
-
-Cas d'usage:
-- conserver un historique local
-- reconsulter les resultats
-
-### JSON
-
-Role:
-- sortie exploitable et portable
-
-Quand il intervient:
-- a chaque traitement
-
-Cas d'usage:
-- integration avec d'autres outils
-- export des resultats
-- verification manuelle
-
-## Comment le choix des outils se fait
-
-### PDF natif avec tableaux
-
-Ordre prefere:
-1. `PyMuPDF` / extraction native
-2. `Camelot` pour les tableaux
-3. fallback heuristique local si besoin
-
-### PDF scanne ou image
-
-Ordre prefere:
-1. `Tesseract`
-2. heuristiques locales
-3. `Hugging Face` si le mode enrichi est active
-
-### Excel / CSV
-
-Ordre prefere:
-1. lecture native
-2. structuration locale
-3. enrichissement semantique eventuel
+Exemples de raisons :
+- `native_text_empty`
+- `native_text_too_short`
+- `native_text_too_noisy`
+- `line_structure_too_fragmented`
+- `forced_by_user`
+- `engine_selected_by_user`
 
 ## Modes disponibles dans l'UI
 
-### Rapide (Local)
-
-Ce mode utilise:
-- extraction native
-- OCR si necessaire
-- regles Python locales
-- parseur financier local
-
-Avantages:
-- plus stable
-- plus rapide
-- pas de dependance cloud
-
-A utiliser si:
-- tu veux un resultat fiable et reproductible
-- le document est deja assez lisible
-
-### Enrichi (Hugging Face)
-
-Ce mode ajoute:
-- appel au modele Hugging Face pour enrichir la structure generale
-
-Avantages:
-- meilleur sur les libelles flous
-- plus souple sur les documents heterogenes
-
-Limites:
-- depend du reseau
-- depend d'un token
-- moins deterministe que le mode local
-
-## Configuration de l'interface
-
-### Forcer OCR
-
-Valeurs:
-- `false`
-- `true`
-
-Effet:
-- force l'utilisation de `Tesseract` meme si le PDF contient deja du texte
-
-A utiliser si:
-- le texte extrait est vide
-- le PDF natif est de mauvaise qualite
-- les tableaux sont mal lus nativement
-
 ### Moteur OCR
 
-Valeurs:
+Valeurs :
 - `Auto`
 - `PaddleOCR`
 - `Tesseract`
 
-Effet:
-- choisit le moteur OCR a utiliser pour les PDFs scannes et les images
-
-Comportement:
-- `Auto`: essaye `PaddleOCR`, puis retombe sur `Tesseract`
-- `PaddleOCR`: force PaddleOCR
-- `Tesseract`: force Tesseract
+Comportement :
+- `Auto` : utilise l'extraction native d'abord puis declenche l'OCR seulement si necessaire
+- `PaddleOCR` : force le passage OCR Paddle
+- `Tesseract` : force le passage OCR Tesseract
 
 ### Mode d'analyse
 
-Valeurs:
+Valeurs :
 - `Rapide (Local)`
 - `Enrichi (Hugging Face)`
 
-Effet:
-- choisit la couche de structuration generale du document
+Comportement :
+- `Rapide (Local)` : structuration locale deterministe
+- `Enrichi (Hugging Face)` : enrichissement semantique en plus
 
-### Onglet Chat
+### Forcer OCR
 
-Effet:
-- permet d'interroger l'etat financier courant apres extraction
+Valeurs :
+- `true`
+- `false`
 
-Comportement:
-- recherche d'abord dans les metriques et line items structures
-- complete avec les passages texte pertinents
-- utilise Hugging Face pour formuler la reponse si disponible
-- sinon retourne une reponse locale basee sur le contexte retrouve
+Comportement :
+- active l'OCR meme si le PDF contient deja du texte natif
 
 ### Indexer dans Qdrant
 
-Valeurs:
-- `false`
+Valeurs :
 - `true`
+- `false`
 
-Effet:
-- active ou non la creation d'embeddings et l'indexation vectorielle
+Comportement :
+- cree des embeddings
+- envoie les chunks dans Qdrant
+- rend le chat plus utile pour la recherche semantique
 
-## Configuration par variables d'environnement
+## Chat actuel
 
-Variables supportees dans [config.py](/C:/Users/cherq/Documents/Playground%204/src/document_platform/config.py):
+Le chat actuel est un service RAG hybride, pas encore un agent autonome.
+
+Il combine :
+- regles locales pour certaines questions financieres
+- recherche dans `key_metrics`
+- recherche dans `financial_statements`
+- recherche dans le texte extrait
+- Qdrant si l'indexation est active
+- Hugging Face si disponible
+
+Il est bon pour :
+- valeurs simples
+- comparaison de periodes
+- questions de rentabilite ou solvabilite
+
+Il reste limite pour :
+- questions de sous-sections complexes
+- enumerations longues
+- navigation fine dans la structure d'un etat
+
+## Variables d'environnement
+
+Variables lues dans [config.py](/C:/Users/cherq/Documents/Playground%204/src/document_platform/config.py) :
 
 ### `APP_DATA_DIR`
 
-Defaut:
+Defaut :
 - `data`
 
-Role:
-- dossier de stockage local
-
-Contient:
-- fichiers JSON
-- base SQLite
+Role :
+- dossier local des donnees applicatives
 
 ### `HF_TOKEN`
 
-Defaut:
-- non defini
-
-Role:
-- token d'acces a Hugging Face
-
-Necessaire pour:
-- le mode `Enrichi (Hugging Face)`
-- les embeddings Hugging Face
-
-Si absent:
-- l'application reste utilisable
-- elle bascule sur le mode local/fallback
+Role :
+- token Hugging Face pour l'enrichissement et certains appels de chat
 
 ### `HF_BASE_URL`
 
-Defaut:
+Defaut :
 - `https://router.huggingface.co`
-
-Role:
-- URL de base des appels Hugging Face
 
 ### `HF_MODEL`
 
-Defaut:
+Defaut :
 - `katanemo/Arch-Router-1.5B:hf-inference`
-
-Role:
-- modele utilise pour la structuration semantique
 
 ### `HF_EMBED_MODEL`
 
-Defaut:
+Defaut :
 - `intfloat/multilingual-e5-large`
-
-Role:
-- modele utilise pour les embeddings
 
 ### `QDRANT_URL`
 
-Defaut:
-- `http://localhost:6333`
-
-Role:
-- URL du serveur Qdrant
+Defaut :
+- `http://qdrant:6333`
 
 ### `QDRANT_COLLECTION`
 
-Defaut:
+Defaut :
 - `documents`
 
-Role:
-- nom de la collection Qdrant
+Note :
+- le nom reel de collection peut etre versionne automatiquement selon le modele d'embedding et sa dimension
 
 ### `TESSERACT_CMD`
 
-Defaut:
-- vide
-
-Role:
-- chemin explicite vers l'executable Tesseract
-
-Utile si:
-- Tesseract n'est pas trouve automatiquement
-- installation Windows personnalisee
+Role :
+- chemin explicite vers l'executable Tesseract si besoin
 
 ### `OCR_ENGINE`
 
-Defaut:
-- `auto`
-
-Valeurs:
+Valeurs :
 - `auto`
 - `paddleocr`
 - `tesseract`
 
-Role:
-- moteur OCR par defaut si aucun choix n'est force dans l'interface
+### `PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK`
 
-## Fichiers principaux du projet
+Defaut :
+- `True`
+
+Role :
+- evite certains checks reseau Paddle au demarrage
+
+### `FLAGS_use_mkldnn`
+
+Defaut :
+- `0`
+
+Role :
+- limite certains problemes runtime Paddle CPU
+
+### `PADDLE_PDX_LOCAL_FONT_FILE_PATH`
+
+Defaut :
+- `/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf`
+
+Role :
+- evite a Paddle de telecharger des polices a chaud
+
+## Fichiers principaux
 
 ### [app.py](/C:/Users/cherq/Documents/Playground%204/app.py)
 
-Contient:
-- l'interface Streamlit
-- les options utilisateur
-- l'affichage des resultats
+UI Streamlit, options, onglets et affichage des resultats.
 
 ### [pipeline.py](/C:/Users/cherq/Documents/Playground%204/src/document_platform/pipeline.py)
 
-Contient:
-- l'orchestration complete du traitement
+Orchestration complete du traitement documentaire.
+
+### [ocr.py](/C:/Users/cherq/Documents/Playground%204/src/document_platform/services/ocr.py)
+
+Gestion des moteurs OCR et fallback Paddle -> Tesseract.
 
 ### [financial_parser.py](/C:/Users/cherq/Documents/Playground%204/src/document_platform/services/financial_parser.py)
 
-Contient:
-- la detection des etats financiers
-- la detection des colonnes
-- l'utilisation de `Camelot`
-- la reconstruction des line items
-- les `key_metrics`
+Extraction structuree des etats financiers et des metriques.
 
 ### [structured_extraction.py](/C:/Users/cherq/Documents/Playground%204/src/document_platform/services/structured_extraction.py)
 
-Contient:
-- la structuration generale du document
-- le mode local
-- le mode Hugging Face
+Structuration generale du document.
+
+### [rag_chat.py](/C:/Users/cherq/Documents/Playground%204/src/document_platform/services/rag_chat.py)
+
+Chat RAG actuel base sur contexte structure + texte + Qdrant.
 
 ### [indexing.py](/C:/Users/cherq/Documents/Playground%204/src/document_platform/services/indexing.py)
 
-Contient:
-- les embeddings
-- l'envoi vers Qdrant
+Embeddings, indexation et recherche dans Qdrant.
 
-### [storage.py](/C:/Users/cherq/Documents/Playground%204/src/document_platform/services/storage.py)
-
-Contient:
-- le stockage JSON
-- le stockage SQLite
-
-## Demarrage local
+## Lancement local
 
 ```powershell
 python -m venv .venv
@@ -534,7 +399,7 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-## Demarrage avec Docker
+## Lancement Docker
 
 ```powershell
 docker compose up -d --build
@@ -545,11 +410,9 @@ docker compose up -d --build
 - Streamlit: [http://localhost:8501](http://localhost:8501)
 - Qdrant: [http://localhost:6333](http://localhost:6333)
 
-## Exemple de configuration `.env`
+## Exemple `.env`
 
-Le fichier versionnable de reference est [.env.example](/C:/Users/cherq/Documents/Playground%204/.env.example).
-
-Exemple:
+Le modele de reference est [.env.example](/C:/Users/cherq/Documents/Playground%204/.env.example).
 
 ```env
 HF_TOKEN=
@@ -560,12 +423,17 @@ QDRANT_URL=http://qdrant:6333
 QDRANT_COLLECTION=documents
 APP_DATA_DIR=/app/data
 TESSERACT_CMD=
+OCR_ENGINE=auto
+PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True
+FLAGS_use_mkldnn=0
+PADDLE_PDX_LOCAL_FONT_FILE_PATH=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
 ```
 
 ## Recommandations pratiques
 
-- utilise `Rapide (Local)` par defaut
-- active `Forcer OCR` pour les scans
-- laisse `Camelot` faire le travail sur les PDFs natifs avec tableaux
-- active `Enrichi (Hugging Face)` seulement si tu as besoin d'un enrichissement semantique
-- desactive `Indexer dans Qdrant` si tu veux juste extraire sans indexer
+- utiliser `Rapide (Local)` par defaut
+- utiliser `PaddleOCR` pour les scans difficiles
+- utiliser `Tesseract` si tu veux une option OCR plus simple et previsible
+- laisser `Camelot` faire le travail pour les PDF natifs avec tableaux
+- activer `Indexer dans Qdrant` surtout si le chat doit servir ensuite
+- considerer le chat actuel comme un bon assistant RAG, mais pas encore comme un agent autonome

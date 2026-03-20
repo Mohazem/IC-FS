@@ -12,6 +12,9 @@ st.set_page_config(page_title="Document Processing Platform", page_icon=":page_f
 
 def render_summary(result: dict) -> None:
     st.subheader("Resume")
+    ocr_decision = result["extraction"].get("metadata", {}).get("ocr_decision", {})
+    requested_engine = ocr_decision.get("details", {}).get("requested_engine", "auto")
+    reason = ocr_decision.get("reason", "unknown")
     left, right = st.columns(2)
     with left:
         st.metric("Chunks indexes", result["indexing"]["indexed_chunks"])
@@ -19,6 +22,9 @@ def render_summary(result: dict) -> None:
     with right:
         st.metric("OCR utilise", "Oui" if result["ocr"]["used"] else "Non")
         st.metric("Pages", result["extraction"]["page_count"])
+    st.caption(
+        f"OCR demande: `{requested_engine}` | moteur execute: `{result['ocr']['engine']}` | raison: `{reason}`"
+    )
 
 
 def render_financial_table(financial_data: dict) -> None:
@@ -146,7 +152,7 @@ def main() -> None:
             "Moteur OCR",
             options=["Auto", "PaddleOCR", "Tesseract"],
             index=0,
-            help="Auto essaye PaddleOCR puis Tesseract. PaddleOCR est souvent meilleur sur les scans difficiles.",
+            help="Auto utilise l'extraction native et ne lance l'OCR qu'en cas de besoin. Choisir PaddleOCR ou Tesseract force ce moteur OCR.",
         )
         extraction_mode_label = st.radio(
             "Mode d'analyse",

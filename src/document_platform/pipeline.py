@@ -36,8 +36,9 @@ class DocumentPipeline:
     ) -> dict:
         document = DocumentInput(file_name=file_name, file_bytes=file_bytes, manual_text=manual_text)
         extraction = self.extraction.extract(document)
+        selected_ocr_engine = (ocr_engine or self.config.ocr_engine or "auto").lower()
 
-        ocr_result = OCRResult(used=False, text="", engine="tesseract", metadata={})
+        ocr_result = OCRResult(used=False, text="", engine=selected_ocr_engine, metadata={})
         lower_name = file_name.lower()
         is_pdf = lower_name.endswith(".pdf")
         is_image = lower_name.endswith((".png", ".jpg", ".jpeg"))
@@ -48,13 +49,14 @@ class DocumentPipeline:
             source_type=extraction.source_type,
             force_ocr=force_ocr,
             has_file=bool(file_bytes),
+            requested_engine=selected_ocr_engine,
         )
         extraction.metadata["ocr_decision"] = ocr_decision
         should_run_ocr = bool(ocr_decision["should_run"] and (is_pdf or is_image))
         if should_run_ocr and is_pdf:
-            ocr_result = self.ocr.extract_from_pdf(file_bytes or b"", engine=ocr_engine)
+            ocr_result = self.ocr.extract_from_pdf(file_bytes or b"", engine=selected_ocr_engine)
         elif should_run_ocr and is_image:
-            ocr_result = self.ocr.extract_from_image(file_bytes or b"", engine=ocr_engine)
+            ocr_result = self.ocr.extract_from_image(file_bytes or b"", engine=selected_ocr_engine)
 
         final_text = ocr_result.text if ocr_result.used else extraction.text
         if extraction_mode == "huggingface":
@@ -122,13 +124,14 @@ class DocumentPipeline:
         source_type: str,
         force_ocr: bool,
         has_file: bool,
+        requested_engine: str,
     ) -> dict:
         if not has_file:
             return {
                 "should_run": False,
                 "pdf_type": "not_applicable",
                 "reason": "no_file_bytes",
-                "details": {},
+                "details": {"requested_engine": requested_engine},
             }
 
         lower_name = file_name.lower()
@@ -139,7 +142,10 @@ class DocumentPipeline:
                 "should_run": False,
                 "pdf_type": "not_applicable",
                 "reason": "unsupported_input_type_for_ocr",
-                "details": {"source_type": source_type},
+                "details": {
+                    "source_type": source_type,
+                    "requested_engine": requested_engine,
+                },
             }
 
         if force_ocr:
@@ -147,7 +153,10 @@ class DocumentPipeline:
                 "should_run": True,
                 "pdf_type": "forced",
                 "reason": "forced_by_user",
-                "details": {"source_type": source_type},
+                "details": {
+                    "source_type": source_type,
+                    "requested_engine": requested_engine,
+                },
             }
 
         if is_image:
@@ -155,7 +164,23 @@ class DocumentPipeline:
                 "should_run": True,
                 "pdf_type": "scanned",
                 "reason": "image_input",
-                "details": {"source_type": source_type},
+                "details": {
+                    "source_type": source_type,
+                    "requested_engine": requested_engine,
+                },
+            }
+
+        # Selecting a specific OCR engine in the UI means "use this OCR path",
+        # while "auto" keeps the heuristic decision.
+        if requested_engine in {"paddleocr", "tesseract"}:
+            return {
+                "should_run": True,
+                "pdf_type": "forced",
+                "reason": "engine_selected_by_user",
+                "details": {
+                    "source_type": source_type,
+                    "requested_engine": requested_engine,
+                },
             }
 
         cleaned = extraction_text.strip()
@@ -177,6 +202,7 @@ class DocumentPipeline:
             "words_per_page": round(words_per_page, 2),
             "alpha_ratio": round(alpha_ratio, 3),
             "line_count": len(lines),
+            "requested_engine": requested_engine,
         }
 
         if not cleaned:

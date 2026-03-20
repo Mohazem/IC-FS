@@ -33,7 +33,20 @@ class OCRService:
                     return result
             return result
 
-        return extractor(engine)
+        result = extractor(engine)
+        if result.used or engine != "paddleocr":
+            return result
+
+        fallback = extractor("tesseract")
+        if fallback.used:
+            fallback.metadata = {
+                **fallback.metadata,
+                "fallback_from": "paddleocr",
+                "fallback_reason": result.metadata.get("error", "paddleocr_failed"),
+            }
+            return fallback
+
+        return result
 
     def _extract_pdf_with_engine(self, file_bytes: bytes, engine: str) -> OCRResult:
         if engine == "paddleocr":
@@ -160,14 +173,24 @@ class OCRService:
 
         try:
             return PaddleOCR(
-                use_textline_orientation=True,
-                lang="fr",
+                text_detection_model_name="PP-OCRv5_mobile_det",
+                text_recognition_model_name="latin_PP-OCRv3_mobile_rec",
+                use_doc_orientation_classify=False,
+                use_doc_unwarping=False,
+                use_textline_orientation=False,
+                enable_mkldnn=False,
+                lang="en",
             )
         except Exception:
             try:
                 return PaddleOCR(
-                    use_textline_orientation=True,
-                    lang="en",
+                    text_detection_model_name="PP-OCRv5_mobile_det",
+                    text_recognition_model_name="PP-OCRv5_mobile_rec",
+                    use_doc_orientation_classify=False,
+                    use_doc_unwarping=False,
+                    use_textline_orientation=False,
+                    enable_mkldnn=False,
+                    lang="ch",
                 )
             except Exception as exc:
                 return OCRResult(used=False, text="", engine="paddleocr", metadata={"error": str(exc)})
@@ -179,6 +202,12 @@ class OCRService:
             result = paddle.ocr(image_array)
         lines: list[str] = []
         for page in result or []:
+            if isinstance(page, dict):
+                for text in page.get("rec_texts", []) or []:
+                    cleaned = str(text).strip()
+                    if cleaned:
+                        lines.append(cleaned)
+                continue
             for item in page or []:
                 if isinstance(item, dict):
                     text = str(item.get("rec_text", "")).strip()
