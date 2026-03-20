@@ -43,6 +43,8 @@ class FinancialChatAgent:
         tool_contexts: list[dict[str, Any]] = []
         tool_trace: list[str] = []
         messages = self._build_messages(question, result)
+        last_tool_action: str | None = None
+        last_tool_result: dict[str, Any] | None = None
 
         for _step in range(self.max_steps):
             plan = self._call_agent(messages)
@@ -56,13 +58,22 @@ class FinancialChatAgent:
 
             if action == "final":
                 answer = str(plan.get("final_answer", "")).strip()
-                if answer:
+                if answer and not self._is_weak_final_answer(answer):
                     return {
                         "answer": answer,
                         "contexts": tool_contexts[:8],
                         "mode": "hf_llm_agent",
                         "tools_used": tool_trace,
                     }
+                if last_tool_action and last_tool_result:
+                    local_answer = self._build_local_answer_from_tool(last_tool_action, last_tool_result)
+                    if local_answer:
+                        return {
+                            "answer": local_answer,
+                            "contexts": tool_contexts[:8],
+                            "mode": "hf_llm_agent_localized_final",
+                            "tools_used": tool_trace,
+                        }
                 break
 
             tool = self.tools.get(action)
@@ -101,6 +112,8 @@ class FinancialChatAgent:
                 )
                 continue
             tool_trace.append(action)
+            last_tool_action = action
+            last_tool_result = tool_result
             tool_contexts.extend(tool_result.get("contexts", []))
             messages.append(
                 {
@@ -540,6 +553,67 @@ class FinancialChatAgent:
         if "final_answer" not in normalized:
             normalized["final_answer"] = ""
         return normalized
+
+    def _is_weak_final_answer(self, answer: str) -> bool:
+        cleaned = answer.strip().lower()
+        if not cleaned:
+            return True
+        weak_markers = [
+            "...",
+            "sont...",
+            "sont ...",
+            "comprennent...",
+            "comprennent ...",
+            "sont:",
+            "sont :",
+        ]
+        if cleaned in weak_markers:
+            return True
+        if cleaned.endswith("..."):
+            return True
+        if len(cleaned) < 18:
+            return True
+        return False
+
+    def _build_local_answer_from_tool(self, action: str, tool_result: dict[str, Any]) -> str | None:
+        try:
+            payload = json.loads(tool_result.get("content", "{}"))
+        except Exception:
+            return None
+
+        if action == "find_section_items" and isinstance(payload, dict):
+            section_label = str(payload.get("section_label", "")).strip()
+            items = payload.get("items", [])
+            if section_label and isinstance(items, list) and items:
+                rendered = "\n".join(f"- {item}" for item in items)
+                return f"{section_label} :\n{rendered}"
+
+        if action == "find_line_item" and isinstance(payload, dict):
+            label = str(payload.get("label", "")).strip()
+            values = payload.get("values", {})
+            if label and isinstance(values, dict):
+                rendered = self._render_values(values)
+                if rendered:
+                    return f"{label} -> {rendered}"
+
+        if action == "get_key_metrics" and isinstance(payload, dict):
+            lines = []
+            for metric_name, values in payload.items():
+                if isinstance(values, dict):
+                    rendered = self._render_values(values)
+                    if rendered:
+                        lines.append(f"- {metric_name.replace('_', ' ').title()} -> {rendered}")
+            if lines:
+                return "\n".join(lines)
+
+        if action == "search_context" and isinstance(payload, list) and payload:
+            best = payload[0]
+            if isinstance(best, dict):
+                text = str(best.get("text", "")).strip()
+                if text:
+                    return text
+
+        return None
 
     def _render_values(self, values: dict[str, Any]) -> str:
         return ", ".join(f"{year}: {value}" for year, value in values.items() if value is not None)
