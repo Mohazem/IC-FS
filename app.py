@@ -95,7 +95,7 @@ def render_financial_statements(financial_data: dict) -> None:
 
 def render_chat_tab(config: AppConfig, result: dict) -> None:
     st.subheader("Chat Finance")
-    st.caption("Pose des questions sur tout l'etat financier: postes, annees, variations, totaux, sections ou lignes detaillees.")
+    st.caption("Pose des questions sur tout l'etat financier. L'agent Hugging Face choisit ses outils locaux pour retrouver les chiffres, sections et lignes detaillees.")
 
     run_id = result["run_id"]
     history_key = f"chat_history_{run_id}"
