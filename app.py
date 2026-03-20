@@ -4,6 +4,7 @@ import streamlit as st
 
 from src.document_platform.config import AppConfig
 from src.document_platform.pipeline import DocumentPipeline
+from src.document_platform.services.rag_chat import FinancialRAGService
 
 
 st.set_page_config(page_title="Document Processing Platform", page_icon=":page_facing_up:", layout="wide")
@@ -86,6 +87,51 @@ def render_financial_statements(financial_data: dict) -> None:
         st.dataframe(rows, use_container_width=True, hide_index=True)
 
 
+def render_chat_tab(config: AppConfig, result: dict) -> None:
+    st.subheader("Chat RAG")
+    st.caption("Pose des questions sur tout l'etat financier: postes, annees, variations, totaux, sections ou lignes detaillees.")
+
+    run_id = result["run_id"]
+    history_key = f"chat_history_{run_id}"
+    if history_key not in st.session_state:
+        st.session_state[history_key] = []
+
+    rag = FinancialRAGService(config)
+
+    for message in st.session_state[history_key]:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+            contexts = message.get("contexts", [])
+            if message["role"] == "assistant" and contexts:
+                with st.expander("Contexte utilise"):
+                    for item in contexts:
+                        st.write(f"- `{item.get('source', item.get('doc_type', 'context'))}`: {item.get('text', '')}")
+
+    question = st.chat_input("Exemple: Quels sont les total des passifs en 2025 et 2024 ?")
+    if not question:
+        return
+
+    st.session_state[history_key].append({"role": "user", "content": question})
+    with st.chat_message("user"):
+        st.markdown(question)
+
+    answer = rag.answer(question, result)
+    st.session_state[history_key].append(
+        {
+            "role": "assistant",
+            "content": answer["answer"],
+            "contexts": answer.get("contexts", []),
+        }
+    )
+    with st.chat_message("assistant"):
+        st.markdown(answer["answer"])
+        contexts = answer.get("contexts", [])
+        if contexts:
+            with st.expander("Contexte utilise"):
+                for item in contexts:
+                    st.write(f"- `{item.get('source', item.get('doc_type', 'context'))}`: {item.get('text', '')}")
+
+
 def main() -> None:
     st.title("Solution FS")
     st.caption("Extraction et structuration des donnees financieres pour PDF, images, Excel et CSV")
@@ -96,6 +142,12 @@ def main() -> None:
     with st.sidebar:
         st.header("Configuration")
         force_ocr = st.toggle("Forcer OCR", value=False)
+        ocr_engine_label = st.selectbox(
+            "Moteur OCR",
+            options=["Auto", "PaddleOCR", "Tesseract"],
+            index=0,
+            help="Auto essaye PaddleOCR puis Tesseract. PaddleOCR est souvent meilleur sur les scans difficiles.",
+        )
         extraction_mode_label = st.radio(
             "Mode d'analyse",
             options=["Rapide (Local)", "Enrichi (Hugging Face)"],
@@ -105,6 +157,7 @@ def main() -> None:
         store_in_qdrant = st.toggle("Indexer dans Qdrant", value=True)
         st.write(f"Dossier data: `{config.data_dir}`")
         st.write(f"SQLite: `{config.sqlite_path}`")
+        st.write(f"OCR par defaut: `{config.ocr_engine}`")
         st.write(f"Hugging Face: `{config.hf_base_url}`")
         st.write(f"Modele HF: `{config.hf_model}`")
         st.write(f"Qdrant: `{config.qdrant_url}`")
@@ -130,42 +183,53 @@ def main() -> None:
                 file_bytes=file_bytes,
                 manual_text=manual_text,
                 force_ocr=force_ocr,
+                ocr_engine=ocr_engine_label.lower(),
                 extraction_mode="huggingface" if extraction_mode_label == "Enrichi (Hugging Face)" else "local",
                 store_in_qdrant=store_in_qdrant,
             )
+        st.session_state["last_result"] = result
+        st.session_state["last_run_id"] = result["run_id"]
+        st.session_state[f"chat_history_{result['run_id']}"] = []
 
-        render_summary(result)
+    result = st.session_state.get("last_result")
+    if not result:
+        return
 
-        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["Texte", "Structure", "Finance", "Regles", "Indexation", "Stockage"])
+    render_summary(result)
 
-        with tab1:
-            st.text_area("Texte extrait", value=result["text"], height=320)
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["Texte", "Structure", "Finance", "Chat", "Regles", "Indexation", "Stockage"])
 
-        with tab2:
-            st.json(result["structured_extraction"])
+    with tab1:
+        st.text_area("Texte extrait", value=result["text"], height=320)
 
-        with tab3:
-            financial_data = result["structured_extraction"].get("financial_data", {})
-            render_financial_table(financial_data)
-            render_financial_statements(financial_data)
-            st.json(financial_data)
+    with tab2:
+        st.json(result["structured_extraction"])
 
-        with tab4:
-            st.json(result["business_rules"])
+    with tab3:
+        financial_data = result["structured_extraction"].get("financial_data", {})
+        render_financial_table(financial_data)
+        render_financial_statements(financial_data)
+        st.json(financial_data)
 
-        with tab5:
-            st.json(result["indexing"])
+    with tab4:
+        render_chat_tab(config, result)
 
-        with tab6:
-            st.json(result["storage"])
-            json_path = Path(result["storage"]["json_path"])
-            if json_path.exists():
-                st.download_button(
-                    label="Telecharger le JSON",
-                    data=json_path.read_text(encoding="utf-8"),
-                    file_name=json_path.name,
-                    mime="application/json",
-                )
+    with tab5:
+        st.json(result["business_rules"])
+
+    with tab6:
+        st.json(result["indexing"])
+
+    with tab7:
+        st.json(result["storage"])
+        json_path = Path(result["storage"]["json_path"])
+        if json_path.exists():
+            st.download_button(
+                label="Telecharger le JSON",
+                data=json_path.read_text(encoding="utf-8"),
+                file_name=json_path.name,
+                mime="application/json",
+            )
 
 
 if __name__ == "__main__":

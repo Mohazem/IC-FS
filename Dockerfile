@@ -9,6 +9,8 @@ WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ghostscript \
+        libgl1 \
+        libglib2.0-0 \
         tesseract-ocr \
         tesseract-ocr-eng \
         tesseract-ocr-fra \

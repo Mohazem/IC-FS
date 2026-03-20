@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from src.document_platform.config import AppConfig
 from src.document_platform.models import DocumentInput, OCRResult, ProcessingResult
 from src.document_platform.services.business_rules import BusinessRulesService
@@ -28,6 +30,7 @@ class DocumentPipeline:
         file_bytes: bytes | None = None,
         manual_text: str = "",
         force_ocr: bool = False,
+        ocr_engine: str | None = None,
         extraction_mode: str = "local",
         store_in_qdrant: bool = True,
     ) -> dict:
@@ -38,11 +41,20 @@ class DocumentPipeline:
         lower_name = file_name.lower()
         is_pdf = lower_name.endswith(".pdf")
         is_image = lower_name.endswith((".png", ".jpg", ".jpeg"))
-        should_run_ocr = bool(file_bytes and (force_ocr or not extraction.text.strip()) and (is_pdf or is_image))
+        ocr_decision = self._should_run_ocr(
+            file_name=file_name,
+            extraction_text=extraction.text,
+            page_count=extraction.page_count,
+            source_type=extraction.source_type,
+            force_ocr=force_ocr,
+            has_file=bool(file_bytes),
+        )
+        extraction.metadata["ocr_decision"] = ocr_decision
+        should_run_ocr = bool(ocr_decision["should_run"] and (is_pdf or is_image))
         if should_run_ocr and is_pdf:
-            ocr_result = self.ocr.extract_from_pdf(file_bytes or b"")
+            ocr_result = self.ocr.extract_from_pdf(file_bytes or b"", engine=ocr_engine)
         elif should_run_ocr and is_image:
-            ocr_result = self.ocr.extract_from_image(file_bytes or b"")
+            ocr_result = self.ocr.extract_from_image(file_bytes or b"", engine=ocr_engine)
 
         final_text = ocr_result.text if ocr_result.used else extraction.text
         if extraction_mode == "huggingface":
@@ -101,3 +113,108 @@ class DocumentPipeline:
             if token.isdigit() and len(token) == 4:
                 return token
         return None
+
+    def _should_run_ocr(
+        self,
+        file_name: str,
+        extraction_text: str,
+        page_count: int,
+        source_type: str,
+        force_ocr: bool,
+        has_file: bool,
+    ) -> dict:
+        if not has_file:
+            return {
+                "should_run": False,
+                "pdf_type": "not_applicable",
+                "reason": "no_file_bytes",
+                "details": {},
+            }
+
+        lower_name = file_name.lower()
+        is_pdf = lower_name.endswith(".pdf")
+        is_image = lower_name.endswith((".png", ".jpg", ".jpeg"))
+        if not (is_pdf or is_image):
+            return {
+                "should_run": False,
+                "pdf_type": "not_applicable",
+                "reason": "unsupported_input_type_for_ocr",
+                "details": {"source_type": source_type},
+            }
+
+        if force_ocr:
+            return {
+                "should_run": True,
+                "pdf_type": "forced",
+                "reason": "forced_by_user",
+                "details": {"source_type": source_type},
+            }
+
+        if is_image:
+            return {
+                "should_run": True,
+                "pdf_type": "scanned",
+                "reason": "image_input",
+                "details": {"source_type": source_type},
+            }
+
+        cleaned = extraction_text.strip()
+        character_count = len(cleaned)
+        alpha_count = sum(char.isalpha() for char in cleaned)
+        word_candidates = re.findall(r"[A-Za-zÀ-ÿ]{2,}", cleaned)
+        word_count = len(word_candidates)
+        lines = [line.strip() for line in extraction_text.splitlines() if line.strip()]
+        pages = max(page_count, 1)
+        chars_per_page = character_count / pages
+        words_per_page = word_count / pages
+        alpha_ratio = alpha_count / max(character_count, 1)
+
+        details = {
+            "character_count": character_count,
+            "word_count": word_count,
+            "page_count": page_count,
+            "chars_per_page": round(chars_per_page, 2),
+            "words_per_page": round(words_per_page, 2),
+            "alpha_ratio": round(alpha_ratio, 3),
+            "line_count": len(lines),
+        }
+
+        if not cleaned:
+            return {
+                "should_run": True,
+                "pdf_type": "scanned",
+                "reason": "native_text_empty",
+                "details": details,
+            }
+
+        if chars_per_page < 80 or words_per_page < 15:
+            return {
+                "should_run": True,
+                "pdf_type": "scanned",
+                "reason": "native_text_too_short",
+                "details": details,
+            }
+
+        if alpha_ratio < 0.45:
+            return {
+                "should_run": True,
+                "pdf_type": "mixed",
+                "reason": "native_text_too_noisy",
+                "details": details,
+            }
+
+        short_lines = sum(1 for line in lines if len(line) <= 3)
+        if lines and short_lines / len(lines) > 0.35:
+            return {
+                "should_run": True,
+                "pdf_type": "mixed",
+                "reason": "line_structure_too_fragmented",
+                "details": {**details, "short_line_ratio": round(short_lines / len(lines), 3)},
+            }
+
+        return {
+            "should_run": False,
+            "pdf_type": "native",
+            "reason": "sufficient_native_text",
+            "details": details,
+        }

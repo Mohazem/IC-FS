@@ -16,6 +16,7 @@ class AppConfig:
     qdrant_url: str
     qdrant_collection: str
     tesseract_cmd: str | None
+    ocr_engine: str
 
     @classmethod
     def from_env(cls) -> "AppConfig":
@@ -33,4 +34,5 @@ class AppConfig:
             qdrant_url=os.getenv("QDRANT_URL", "http://localhost:6333"),
             qdrant_collection=os.getenv("QDRANT_COLLECTION", "documents"),
             tesseract_cmd=os.getenv("TESSERACT_CMD"),
+            ocr_engine=os.getenv("OCR_ENGINE", "auto"),
         )

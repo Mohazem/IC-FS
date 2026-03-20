@@ -7,6 +7,7 @@ Elle permet de charger des documents `PDF`, `images`, `Excel`, `CSV` ou du `text
 - reconstruire les tableaux financiers
 - detecter les periodes et les colonnes comparatives
 - produire un JSON structure
+- interroger l'etat financier via un chat RAG
 - stocker les resultats en `JSON` et `SQLite`
 - indexer le contenu dans `Qdrant` si active
 
@@ -70,7 +71,7 @@ Pipeline reel de l'application:
 1. `Streamlit UI` recoit un fichier ou du texte
 2. `DocumentPipeline` orchestre le traitement
 3. extraction native du contenu
-4. OCR `Tesseract` si necessaire
+4. OCR `PaddleOCR` ou `Tesseract` si necessaire
 5. extraction structuree:
    - mode `Rapide (Local)`
    - ou mode `Enrichi (Hugging Face)`
@@ -82,6 +83,7 @@ Pipeline reel de l'application:
 7. regles metier
 8. stockage `JSON` / `SQLite`
 9. indexation `Qdrant` optionnelle
+10. chat RAG sur l'etat financier traite
 
 ## Outils utilises
 
@@ -101,6 +103,7 @@ Quand il intervient:
 
 Configuration visible dans l'UI:
 - `Forcer OCR`
+- `Moteur OCR`
 - `Mode d'analyse`
 - `Indexer dans Qdrant`
 
@@ -170,6 +173,25 @@ Important:
 - `Tesseract` lit le texte, mais ne reconstruit pas aussi bien les tableaux que `Camelot`
 - il est utile quand le document n'est pas nativement exploitable
 
+### PaddleOCR
+
+Role:
+- OCR deep learning plus robuste sur les scans difficiles
+- meilleure lecture des documents bruites ou multilingues
+
+Quand il intervient:
+- si `Moteur OCR = PaddleOCR`
+- ou si `Moteur OCR = Auto`
+
+Cas d'usage:
+- PDF scanne difficile
+- image de document
+- OCR plus robuste que Tesseract sur certaines mises en page
+
+Important:
+- `PaddleOCR` est plus lourd que `Tesseract`
+- il est utile quand la qualite OCR est prioritaire
+
 ### Hugging Face
 
 Role:
@@ -201,6 +223,27 @@ Cas d'usage:
 - retrouver des documents similaires
 - preparer une recherche sémantique
 - alimenter un futur moteur de question/reponse
+
+### Chat RAG
+
+Role:
+- permettre de poser des questions sur tout l'etat financier traite
+
+Quand il intervient:
+- apres le traitement du document
+- dans l'onglet `Chat`
+
+Types de questions supportees:
+- `Quels sont les passifs en 2025 et 2024 ?`
+- `Quel est le total des charges ?`
+- `Quelle ligne parle des avantages sociaux futurs ?`
+- `Resume les principales variations entre 2025 et 2024`
+
+Sources utilisees:
+- `key_metrics`
+- `financial_statements`
+- texte extrait
+- Qdrant si l'indexation est active
 
 ### SQLite
 
@@ -299,6 +342,21 @@ A utiliser si:
 - le PDF natif est de mauvaise qualite
 - les tableaux sont mal lus nativement
 
+### Moteur OCR
+
+Valeurs:
+- `Auto`
+- `PaddleOCR`
+- `Tesseract`
+
+Effet:
+- choisit le moteur OCR a utiliser pour les PDFs scannes et les images
+
+Comportement:
+- `Auto`: essaye `PaddleOCR`, puis retombe sur `Tesseract`
+- `PaddleOCR`: force PaddleOCR
+- `Tesseract`: force Tesseract
+
 ### Mode d'analyse
 
 Valeurs:
@@ -307,6 +365,17 @@ Valeurs:
 
 Effet:
 - choisit la couche de structuration generale du document
+
+### Onglet Chat
+
+Effet:
+- permet d'interroger l'etat financier courant apres extraction
+
+Comportement:
+- recherche d'abord dans les metriques et line items structures
+- complete avec les passages texte pertinents
+- utilise Hugging Face pour formuler la reponse si disponible
+- sinon retourne une reponse locale basee sur le contexte retrouve
 
 ### Indexer dans Qdrant
 
@@ -400,6 +469,19 @@ Role:
 Utile si:
 - Tesseract n'est pas trouve automatiquement
 - installation Windows personnalisee
+
+### `OCR_ENGINE`
+
+Defaut:
+- `auto`
+
+Valeurs:
+- `auto`
+- `paddleocr`
+- `tesseract`
+
+Role:
+- moteur OCR par defaut si aucun choix n'est force dans l'interface
 
 ## Fichiers principaux du projet
 
