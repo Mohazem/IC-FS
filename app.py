@@ -4,7 +4,7 @@ import streamlit as st
 
 from src.document_platform.config import AppConfig
 from src.document_platform.pipeline import DocumentPipeline
-from src.document_platform.services.rag_chat import FinancialRAGService
+from src.document_platform.services.financial_chat_agent import FinancialChatAgent
 
 
 st.set_page_config(page_title="Document Processing Platform", page_icon=":page_facing_up:", layout="wide")
@@ -94,7 +94,7 @@ def render_financial_statements(financial_data: dict) -> None:
 
 
 def render_chat_tab(config: AppConfig, result: dict) -> None:
-    st.subheader("Chat RAG")
+    st.subheader("Chat Finance")
     st.caption("Pose des questions sur tout l'etat financier: postes, annees, variations, totaux, sections ou lignes detaillees.")
 
     run_id = result["run_id"]
@@ -102,7 +102,7 @@ def render_chat_tab(config: AppConfig, result: dict) -> None:
     if history_key not in st.session_state:
         st.session_state[history_key] = []
 
-    rag = FinancialRAGService(config)
+    agent = FinancialChatAgent(config)
 
     for message in st.session_state[history_key]:
         with st.chat_message(message["role"]):
@@ -121,7 +121,7 @@ def render_chat_tab(config: AppConfig, result: dict) -> None:
     with st.chat_message("user"):
         st.markdown(question)
 
-    answer = rag.answer(question, result)
+    answer = agent.answer(question, result)
     st.session_state[history_key].append(
         {
             "role": "assistant",
