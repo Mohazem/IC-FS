@@ -21,6 +21,7 @@ class FinancialChatAgent:
             "get_statement_titles": self._tool_get_statement_titles,
             "get_statement_lines": self._tool_get_statement_lines,
             "find_section_items": self._tool_find_section_items,
+            "analyze_section_amounts": self._tool_analyze_section_amounts,
             "find_line_item": self._tool_find_line_item,
             "search_context": self._tool_search_context,
         }
@@ -128,6 +129,16 @@ class FinancialChatAgent:
                 }
             )
 
+        if last_tool_action and last_tool_result:
+            local_answer = self._build_local_answer_from_tool(last_tool_action, last_tool_result)
+            if local_answer:
+                return {
+                    "answer": local_answer,
+                    "contexts": tool_contexts[:8],
+                    "mode": "hf_llm_agent_localized_fallback",
+                    "tools_used": tool_trace,
+                }
+
         fallback = self.rag.answer(question, result)
         fallback["mode"] = "agent_fallback_rag_after_llm"
         fallback["tools_used"] = tool_trace or ["fallback_rag"]
@@ -151,6 +162,7 @@ class FinancialChatAgent:
                 "- get_statement_titles() -> list detected statements before choosing a statement-specific tool",
                 "- get_statement_lines(statement_name?: str, limit?: int) -> inspect a full statement when you need nearby line items",
                 "- find_section_items(section_label: str, limit?: int) -> use for questions asking to list, detail, compose, or enumerate a section",
+                "- analyze_section_amounts(section_label: str, limit?: int) -> use for questions asking the largest, highest, smallest, or lowest item inside one section",
                 "- find_line_item(label: str, year?: str) -> use for questions asking the amount of one specific item such as loyer, inventaire, encaisse, passifs, revenus",
                 "- search_context(query: str, limit?: int) -> use when labels are unclear or the first tool was insufficient",
                 "- final(final_answer: str) -> final answer in French based only on tool results",
@@ -165,6 +177,7 @@ class FinancialChatAgent:
             "When you have enough evidence, return action=final.\n\n"
             "Valid JSON examples:\n"
             '{"action":"find_section_items","action_input":{"section_label":"actifs a court terme","limit":6},"final_answer":""}\n'
+            '{"action":"analyze_section_amounts","action_input":{"section_label":"depenses","limit":6},"final_answer":""}\n'
             '{"action":"final","action_input":{},"final_answer":"Les actifs a court terme sont ..."}\n\n'
             f"Available tools:\n{available_tools}"
         )
@@ -356,6 +369,37 @@ class FinancialChatAgent:
         }
         return {"content": json.dumps(payload, ensure_ascii=True, indent=2), "contexts": fallback.get("contexts", [])}
 
+    def _tool_analyze_section_amounts(
+        self,
+        result: dict[str, Any],
+        section_label: str,
+        limit: int = 8,
+        **_: Any,
+    ) -> dict[str, Any]:
+        items = self._extract_section_amount_items(section_label, result.get("text", ""), limit=limit)
+        if not items:
+            return {
+                "content": json.dumps({"error": "section_amounts_not_found", "section_label": section_label}, ensure_ascii=True),
+                "contexts": [],
+            }
+
+        ranked = sorted(items, key=lambda item: item["amount_value"], reverse=True)
+        contexts = [
+            {
+                "text": f"{section_label} | {item['label']} | {item['amount_text']}",
+                "source": "document_text",
+                "doc_type": "section_amount_item",
+            }
+            for item in ranked
+        ]
+        payload = {
+            "section_label": section_label,
+            "items": ranked,
+            "largest_item": ranked[0],
+            "smallest_item": ranked[-1],
+        }
+        return {"content": json.dumps(payload, ensure_ascii=True, indent=2), "contexts": contexts}
+
     def _tool_search_context(
         self,
         result: dict[str, Any],
@@ -484,6 +528,81 @@ class FinancialChatAgent:
             return None
         return {"section_label": best_label, "items": items}
 
+    def _extract_section_amount_items(self, target: str, text: str, limit: int) -> list[dict[str, Any]]:
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        normalized_target = self._normalize(target)
+        best_index = -1
+        best_score = 0.0
+
+        for index, line in enumerate(lines):
+            score = self._similarity(self._normalize(line), normalized_target)
+            if score > best_score:
+                best_score = score
+                best_index = index
+
+        if best_index < 0 or best_score < 0.5:
+            return []
+
+        candidates: list[str] = []
+        for line in lines[best_index + 1 :]:
+            normalized_line = self._normalize(line)
+            if self._is_section_stop(normalized_line):
+                break
+            if re.fullmatch(r"(19|20)\d{2}", line):
+                continue
+            candidates.append(line)
+            if len(candidates) >= limit * 4:
+                break
+
+        parsed: list[dict[str, Any]] = []
+        index = 0
+        while index < len(candidates):
+            current = candidates[index].strip()
+            next_item = candidates[index + 1].strip() if index + 1 < len(candidates) else ""
+
+            if self._is_amount_only(current):
+                if next_item and not self._is_amount_only(next_item) and not self._looks_like_total(next_item):
+                    amount_value = self._parse_amount(current)
+                    if amount_value is not None:
+                        parsed.append(
+                            {
+                                "label": next_item,
+                                "amount_text": current,
+                                "amount_value": amount_value,
+                            }
+                        )
+                    index += 2
+                    continue
+                index += 1
+                continue
+
+            embedded_amounts = self._extract_amount_strings(current)
+            if embedded_amounts and not self._looks_like_total(current):
+                amount_text = embedded_amounts[-1]
+                label = current.replace(amount_text, "").strip(" |-:")
+                amount_value = self._parse_amount(amount_text)
+                if label and amount_value is not None:
+                    parsed.append(
+                        {
+                            "label": label,
+                            "amount_text": amount_text,
+                            "amount_value": amount_value,
+                        }
+                    )
+            index += 1
+
+        deduped: list[dict[str, Any]] = []
+        seen = set()
+        for item in parsed:
+            key = (self._normalize(item["label"]), item["amount_text"])
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(item)
+            if len(deduped) >= limit:
+                break
+        return deduped
+
     def _find_line_item_match(self, label: str, statements: dict[str, Any]) -> dict[str, Any] | None:
         target = self._normalize(label)
         best: tuple[float, dict[str, Any]] | None = None
@@ -545,6 +664,12 @@ class FinancialChatAgent:
                     action_input["label"] = action_input.pop(key)
                     break
 
+        if action == "analyze_section_amounts":
+            for key in ["label", "query", "item_name"]:
+                if key in action_input and "section_label" not in action_input:
+                    action_input["section_label"] = action_input.pop(key)
+                    break
+
         if action == "search_context" and "section_label" in action_input and "query" not in action_input:
             action_input["query"] = action_input.pop("section_label")
 
@@ -595,6 +720,14 @@ class FinancialChatAgent:
                 rendered = self._render_values(values)
                 if rendered:
                     return f"{label} -> {rendered}"
+
+        if action == "analyze_section_amounts" and isinstance(payload, dict):
+            largest_item = payload.get("largest_item")
+            if isinstance(largest_item, dict):
+                label = str(largest_item.get("label", "")).strip()
+                amount_text = str(largest_item.get("amount_text", "")).strip()
+                if label and amount_text:
+                    return f"La ligne la plus elevee de la section est `{label}` avec un montant de {amount_text}."
 
         if action == "get_key_metrics" and isinstance(payload, dict):
             lines = []
@@ -666,6 +799,10 @@ class FinancialChatAgent:
         ]
         return any(normalized_line.startswith(token) for token in stop_tokens)
 
+    def _looks_like_total(self, value: str) -> bool:
+        normalized = self._normalize(value)
+        return normalized.startswith("total") or "surplus" in normalized or "deficit" in normalized
+
     def _consolidate_text_section_items(self, items: list[str]) -> list[str]:
         consolidated: list[str] = []
         index = 0
@@ -692,3 +829,21 @@ class FinancialChatAgent:
     def _is_amount_only(self, value: str) -> bool:
         cleaned = value.replace("$", "").replace(",", ".").strip()
         return bool(re.fullmatch(r"\d{1,3}(?:[ \u00A0]\d{3})*(?:[.,]\d{2})?|\d{4,}(?:[.,]\d{2})?", cleaned))
+
+    def _parse_amount(self, raw_value: str | None) -> float | None:
+        if not raw_value:
+            return None
+        cleaned = str(raw_value).replace("$", "").replace("\u00a0", " ").strip()
+        negative = cleaned.startswith("(") and cleaned.endswith(")")
+        cleaned = cleaned.replace("(", "").replace(")", "")
+        cleaned = re.sub(r"\s+", "", cleaned)
+        cleaned = cleaned.replace(",", ".")
+        try:
+            value = float(cleaned)
+        except ValueError:
+            return None
+        return -value if negative else value
+
+    def _extract_amount_strings(self, text: str) -> list[str]:
+        pattern = r"\(?-?\d{1,3}(?:[ \u00A0]\d{3})*(?:[.,]\d{2})?\)?|\(?-?\d{4,}(?:[.,]\d{2})?\)?"
+        return [match.strip() for match in re.findall(pattern, text) if any(char.isdigit() for char in match)]
