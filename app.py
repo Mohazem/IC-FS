@@ -10,6 +10,94 @@ from src.document_platform.services.financial_chat_agent import FinancialChatAge
 st.set_page_config(page_title="Document Processing Platform", page_icon=":page_facing_up:", layout="wide")
 
 
+def render_chat_styles() -> None:
+    st.markdown(
+        """
+        <style>
+        .chat-answer-card {
+            border: 1px solid rgba(250, 250, 250, 0.12);
+            border-radius: 16px;
+            padding: 1rem 1.1rem;
+            background: rgba(255, 255, 255, 0.03);
+            margin: 0.15rem 0 0.6rem 0;
+        }
+        .chat-answer-card p:last-child {
+            margin-bottom: 0;
+        }
+        .chat-badges {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.4rem;
+            margin: 0.2rem 0 0.7rem 0;
+        }
+        .chat-badge {
+            display: inline-block;
+            padding: 0.18rem 0.55rem;
+            border-radius: 999px;
+            font-size: 0.78rem;
+            border: 1px solid rgba(250, 250, 250, 0.12);
+            background: rgba(255, 255, 255, 0.04);
+        }
+        .chat-badge.mode {
+            background: rgba(255, 166, 0, 0.12);
+            border-color: rgba(255, 166, 0, 0.18);
+        }
+        .chat-badge.tool {
+            background: rgba(0, 200, 140, 0.12);
+            border-color: rgba(0, 200, 140, 0.18);
+        }
+        .chat-question-card {
+            border-left: 3px solid rgba(255, 90, 90, 0.95);
+            padding-left: 0.85rem;
+            margin: 0.15rem 0 0.35rem 0;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_chat_badges(mode: str | None, tools: list[str] | None) -> None:
+    badges: list[str] = []
+    if mode:
+        badges.append(f"<span class='chat-badge mode'>Mode: {mode}</span>")
+    for tool in tools or []:
+        badges.append(f"<span class='chat-badge tool'>{tool}</span>")
+    if badges:
+        st.markdown(f"<div class='chat-badges'>{''.join(badges)}</div>", unsafe_allow_html=True)
+
+
+def render_answer_body(answer: str) -> None:
+    normalized = answer.strip()
+    if "\n- " in normalized or normalized.startswith("- "):
+        st.markdown(normalized)
+        return
+
+    if " :\n" in normalized or ":\n- " in normalized:
+        st.markdown(normalized)
+        return
+
+    st.markdown(f"<div class='chat-answer-card'>{normalized}</div>", unsafe_allow_html=True)
+
+
+def render_contexts(contexts: list[dict]) -> None:
+    if not contexts:
+        return
+
+    rows = []
+    for item in contexts:
+        rows.append(
+            {
+                "Source": item.get("source", "context"),
+                "Type": item.get("doc_type", "context"),
+                "Extrait": item.get("text", ""),
+            }
+        )
+
+    with st.expander("Contexte utilise", expanded=False):
+        st.dataframe(rows, use_container_width=True, hide_index=True)
+
+
 def render_summary(result: dict) -> None:
     st.subheader("Resume")
     ocr_decision = result["extraction"].get("metadata", {}).get("ocr_decision", {})
@@ -96,6 +184,7 @@ def render_financial_statements(financial_data: dict) -> None:
 def render_chat_tab(config: AppConfig, result: dict) -> None:
     st.subheader("Chat Finance")
     st.caption("Pose des questions sur tout l'etat financier. L'agent Hugging Face choisit ses outils locaux pour retrouver les chiffres, sections et lignes detaillees.")
+    render_chat_styles()
 
     run_id = result["run_id"]
     history_key = f"chat_history_{run_id}"
@@ -106,12 +195,12 @@ def render_chat_tab(config: AppConfig, result: dict) -> None:
 
     for message in st.session_state[history_key]:
         with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-            contexts = message.get("contexts", [])
-            if message["role"] == "assistant" and contexts:
-                with st.expander("Contexte utilise"):
-                    for item in contexts:
-                        st.write(f"- `{item.get('source', item.get('doc_type', 'context'))}`: {item.get('text', '')}")
+            if message["role"] == "user":
+                st.markdown(f"<div class='chat-question-card'>{message['content']}</div>", unsafe_allow_html=True)
+            else:
+                render_chat_badges(message.get("mode"), message.get("tools_used"))
+                render_answer_body(message["content"])
+                render_contexts(message.get("contexts", []))
 
     question = st.chat_input("Exemple: Quels sont les total des passifs en 2025 et 2024 ?")
     if not question:
@@ -119,7 +208,7 @@ def render_chat_tab(config: AppConfig, result: dict) -> None:
 
     st.session_state[history_key].append({"role": "user", "content": question})
     with st.chat_message("user"):
-        st.markdown(question)
+        st.markdown(f"<div class='chat-question-card'>{question}</div>", unsafe_allow_html=True)
 
     answer = agent.answer(question, result)
     st.session_state[history_key].append(
@@ -127,15 +216,14 @@ def render_chat_tab(config: AppConfig, result: dict) -> None:
             "role": "assistant",
             "content": answer["answer"],
             "contexts": answer.get("contexts", []),
+            "mode": answer.get("mode"),
+            "tools_used": answer.get("tools_used", []),
         }
     )
     with st.chat_message("assistant"):
-        st.markdown(answer["answer"])
-        contexts = answer.get("contexts", [])
-        if contexts:
-            with st.expander("Contexte utilise"):
-                for item in contexts:
-                    st.write(f"- `{item.get('source', item.get('doc_type', 'context'))}`: {item.get('text', '')}")
+        render_chat_badges(answer.get("mode"), answer.get("tools_used", []))
+        render_answer_body(answer["answer"])
+        render_contexts(answer.get("contexts", []))
 
 
 def main() -> None:

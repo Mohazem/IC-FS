@@ -12,7 +12,7 @@ Fonctions principales :
 - extraction financiere specialisee par etat et par periode
 - stockage JSON et SQLite
 - indexation Qdrant
-- chat RAG sur le document traite
+- chat financier pilote par un agent Hugging Face
 
 ## Architecture
 
@@ -55,9 +55,12 @@ flowchart LR
     end
 
     subgraph CHAT["Question / Reponse"]
-        OUT --> RAG["FinancialRAGService"]
-        Q --> RAG
-        RAG --> UIR["Reponse dans l'UI"]
+        OUT --> AG["FinancialChatAgent"]
+        Q --> AG
+        AG --> TOOLS["Outils locaux<br/>key_metrics / sections / line items / search"]
+        TOOLS --> UIR["Reponse dans l'UI"]
+        AG --> RAG["Fallback RAG"]
+        RAG --> UIR
     end
 ```
 
@@ -65,14 +68,35 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    Q["Question utilisateur"] --> C["FinancialRAGService"]
-    C --> C1["Recherche locale<br/>key_metrics / line_items / texte"]
-    C --> C2["Recherche Qdrant<br/>si indexation active"]
-    C --> C3["Regles metier locales<br/>rentabilite / solvabilite / postes"]
-    C1 --> M["Fusion du contexte"]
-    C2 --> M
-    C3 --> M
-    M --> A["Reponse locale ou Hugging Face"]
+    Q["Question utilisateur"] --> A["FinancialChatAgent"]
+    A --> P["Plan LLM Hugging Face<br/>choix d'un outil"]
+    P --> T1["get_key_metrics"]
+    P --> T2["find_section_items"]
+    P --> T3["analyze_section_amounts"]
+    P --> T4["find_line_item"]
+    P --> T5["search_context"]
+    T1 --> O["Observation outil"]
+    T2 --> O
+    T3 --> O
+    T4 --> O
+    T5 --> O
+    O --> F["Finalisation LLM"]
+    F --> R["Reponse UI"]
+    F --> LF["Fallback local<br/>si reponse vague"]
+    LF --> R
+    O --> RG["Fallback RAG<br/>si boucle ou echec LLM"]
+    RG --> R
+```
+
+## Diagramme de l'UI du chat
+
+```mermaid
+flowchart LR
+    U["Question utilisateur"] --> UI["Onglet Chat Streamlit"]
+    UI --> MSG["Historique de messages"]
+    UI --> BADGES["Badges<br/>mode / tools_used"]
+    UI --> ANSWER["Carte reponse"]
+    UI --> CTX["Tableau de contexte<br/>Source / Type / Extrait"]
 ```
 
 ## Composants et utilite exacte
@@ -259,25 +283,44 @@ Comportement :
 
 ## Chat actuel
 
-Le chat actuel est un service RAG hybride, pas encore un agent autonome.
+Le chat actuel repose sur [financial_chat_agent.py](/C:/Users/cherq/Documents/Playground%204/src/document_platform/services/financial_chat_agent.py).
 
-Il combine :
-- regles locales pour certaines questions financieres
-- recherche dans `key_metrics`
-- recherche dans `financial_statements`
-- recherche dans le texte extrait
-- Qdrant si l'indexation est active
-- Hugging Face si disponible
+Ce n'est plus seulement un chat RAG. C'est un agent LLM guide par Hugging Face qui :
+- choisit un outil local
+- lit le resultat de l'outil
+- tente une reponse finale
+- retombe sur un fallback local ou RAG si le modele echoue
+
+Outils exposes a l'agent :
+- `get_key_metrics`
+- `get_statement_titles`
+- `get_statement_lines`
+- `find_section_items`
+- `analyze_section_amounts`
+- `find_line_item`
+- `search_context`
+
+Fallbacks existants :
+- fallback local si le modele repond avec une phrase incomplete ou trop vague
+- fallback RAG si le modele ne parvient pas a conclure
+
+L'UI du chat montre maintenant :
+- la question utilisateur
+- la reponse dans une carte dediee
+- le `mode` de reponse
+- les `tools_used`
+- un tableau de contexte plus lisible
 
 Il est bon pour :
 - valeurs simples
-- comparaison de periodes
-- questions de rentabilite ou solvabilite
+- listes de sections
+- plus grand / plus petit montant dans une section
+- comparaison de periodes simples
 
 Il reste limite pour :
-- questions de sous-sections complexes
-- enumerations longues
-- navigation fine dans la structure d'un etat
+- OCR tres bruite
+- raisonnements multi-etapes longs
+- documents dont la structure est tres pauvre en `line_items`
 
 ## Variables d'environnement
 
